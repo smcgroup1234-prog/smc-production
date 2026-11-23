@@ -3408,12 +3408,11 @@ $('lbPrev').onclick = () => stepLB(-1);
 $('lbNext').onclick = () => stepLB(1);
 $('lbThumbs').onclick = e => { const b = e.target.closest('button'); if (b) { LB.i = Number(b.dataset.k); showLB(); } };
 $('lb').onclick = e => { if (e.target.id === 'lb') closeLB(); };
-$('modal').onclick = e => { if (e.target.id === 'modal') closeModal(); };
+// หน้าต่างกรอกข้อมูล: ปิดได้เฉพาะปุ่ม ✕ / ยกเลิก / บันทึก — คลิกพื้นหลังหรือกด Esc จะไม่ปิด (กันลากคลุมข้อความแล้วหน้าต่างปิดเอง)
 $('mClose').onclick = closeModal;
 document.addEventListener('keydown', e => {
   if (!$('dlg').hidden) { if (e.key === 'Escape') $('dCancel').click(); return; }
   if (!$('lb').hidden) { if (e.key === 'Escape') closeLB(); else if (e.key === 'ArrowLeft') stepLB(-1); else if (e.key === 'ArrowRight') stepLB(1); return; }
-  if (!$('modal').hidden && e.key === 'Escape') closeModal();
 });
 let tx = null;
 $('lb').addEventListener('touchstart', e => { tx = e.touches[0].clientX; }, { passive: true });
