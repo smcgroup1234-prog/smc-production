@@ -650,6 +650,8 @@ h4.subh{margin:0 0 6px;font-size:12px;color:var(--ink-2);font-weight:600}
 .pthumbs img{width:56px;height:56px;object-fit:cover;border-radius:6px}
 
 
+.etbl select.ucol{min-width:74px;padding-right:22px}
+.kpi .val .usep{color:var(--ink-3);font-weight:400;margin:0 2px}
 /* =================== Login (Supabase) =================== */
 .login{position:fixed;inset:0;z-index:100;background:var(--page);display:flex;align-items:center;justify-content:center;padding:20px}
 .login[hidden]{display:none}
@@ -960,11 +962,12 @@ window.SMC_CONFIG = {
   async function loadStruct(force) {
     if (STRUCT && !force) return STRUCT;
     const [lines, losses] = await Promise.all([
-      selectAll('lines', 'id, name, unit, group_key, has_sachet, has_remark, has_mp_plan, has_mp_actual, sort_order', q => q.eq('active', true).order('sort_order').order('id')),
+      selectAll('lines', 'id, name, unit, unit_options, group_key, has_sachet, has_remark, has_mp_plan, has_mp_actual, sort_order', q => q.eq('active', true).order('sort_order').order('id')),
       selectAll('line_loss_types', 'id, line_id, name, unit, sort_order', q => q.eq('active', true).order('sort_order').order('id'))
     ]);
     STRUCT = lines.map(l => ({
       id: Number(l.id), name: l.name, unit: l.unit, group: l.group_key,
+      unitOpts: Array.isArray(l.unit_options) && l.unit_options.length ? l.unit_options : null,
       sachet: l.has_sachet ? 1 : -1, remark: l.has_remark ? 1 : -1, mpP: l.has_mp_plan ? 1 : -1, mpA: l.has_mp_actual ? 1 : -1,
       loss: losses.filter(x => Number(x.line_id) === Number(l.id)).map(x => ({ id: Number(x.id), name: x.name, unit: x.unit })), warn: []
     }));
@@ -996,7 +999,7 @@ window.SMC_CONFIG = {
     const out = {
       config: publicConfig_(),
       groups: groupsOf_(st).map(g => ({ key: g.key, label: g.label, sheets: st.filter(s => groupKeyOf_(s) === g.key).map(s => s.name) })),
-      sheets: st.map(s => ({ name: s.name, unit: s.unit, sachet: s.sachet >= 0, loss: s.loss.map(l => ({ name: l.name, unit: l.unit })) })),
+      sheets: st.map(s => ({ name: s.name, unit: s.unit, unitOpts: s.unitOpts, sachet: s.sachet >= 0, loss: s.loss.map(l => ({ name: l.name, unit: l.unit })) })),
       products: master.items.map(p => ({ name: p.name, sachet: p.sachet, note: p.note })),
       modules: Object.keys(MODULES).map(k => ({ key: k, title: MODULES[k].title })),
       pinRequired: false, today, warnings, fastApi: true, me: ME
@@ -1015,13 +1018,14 @@ window.SMC_CONFIG = {
     const s = findStruct_(String(sheetName || ''));
     const d = await rpc('get_entry', { p_line_id: s.id, p_date: iso });
     const lossArr = m => s.loss.map(l => { const v = (m || {})[String(l.id)]; return v == null ? null : Number(v); });
-    const rows = (d.rows || []).map(r => ({ product: r.product, sachet: numOrNull_(r.sachet), plan: numOrNull_(r.plan), act: numOrNull_(r.act), remark: r.remark || '', loss: lossArr(r.loss) }));
+    const rows = (d.rows || []).map(r => ({ product: r.product, unit: r.unit || s.unit, sachet: numOrNull_(r.sachet), plan: numOrNull_(r.plan), act: numOrNull_(r.act), remark: r.remark || '', loss: lossArr(r.loss) }));
     return {
       sheet: s.name, unit: s.unit, iso,
       has: { sachet: s.sachet >= 0, remark: s.remark >= 0, mp: s.mpP >= 0 || s.mpA >= 0, mpP: s.mpP >= 0, mpA: s.mpA >= 0, sumLoss: false },
+      unitOpts: s.unitOpts,
       loss: s.loss.map(l => ({ name: l.name, unit: l.unit })),
       rows, mpP: numOrNull_(d.mp_plan), mpA: numOrNull_(d.mp_actual), slots: rows.length,
-      prev: { iso: d.prev && d.prev.date ? d.prev.date : '', rows: ((d.prev && d.prev.rows) || []).map(r => ({ product: r.product, sachet: numOrNull_(r.sachet), plan: numOrNull_(r.plan) })) },
+      prev: { iso: d.prev && d.prev.date ? d.prev.date : '', rows: ((d.prev && d.prev.rows) || []).map(r => ({ product: r.product, unit: r.unit || s.unit, sachet: numOrNull_(r.sachet), plan: numOrNull_(r.plan) })) },
       recent: d.recent || [], warn: s.warn
     };
   }
@@ -1036,7 +1040,7 @@ window.SMC_CONFIG = {
     const rows = (Array.isArray(p.rows) ? p.rows : []).map(r => {
       const loss = {};
       s.loss.forEach((l, j) => { const v = (r.loss || [])[j]; if (v != null && v !== '') loss[String(l.id)] = v; });
-      return { product: r.product || '', sachet: r.sachet, plan: r.plan, act: r.act, remark: r.remark || '', loss };
+      return { product: r.product || '', unit: s.unitOpts ? (r.unit || s.unit) : null, sachet: r.sachet, plan: r.plan, act: r.act, remark: r.remark || '', loss };
     });
     const res = await rpc('save_entry', { p_line_id: s.id, p_date: iso, p_mp_plan: p.mpP == null ? null : p.mpP, p_mp_actual: p.mpA == null ? null : p.mpA, p_rows: rows });
     const fresh = await getEntry(s.name, iso);      // ค่าที่บันทึกจริง (รวม Sachet/CT จาก Master)
@@ -1051,18 +1055,37 @@ window.SMC_CONFIG = {
   function rowHasData_(x) {
     return !!(x.product || x.plan != null || x.act != null || x.remark || x.mpP != null || x.mpA != null || x.loss.some(v => v != null));
   }
-  /** แปลงข้อมูลจาก get_entries → แถวแบบเดิม (Manpower = แถวพิเศษของวัน แทน "แถวแรกของวัน" ในชีต) */
+  /** หน่วยของแถว (ไลน์ที่เลือกหน่วยได้ เก็บหน่วยรายแถว · ไลน์อื่นใช้หน่วยของไลน์) */
+  const unitOfRow_ = (base, e) => (base.unitOpts && e.unit) || base.unit;
+  /** วันนี้ Manpower ไปอยู่กับหน่วยไหน: หน่วยปกติของไลน์ ถ้าวันนั้นไม่มีแถวหน่วยปกติ → หน่วยแรกที่ใช้ (กันนับซ้ำ) */
+  function mpUnit_(base, data, date) {
+    const us = [];
+    (data.entries || []).forEach(e => { if (Number(e.line_id) === base.id && e.date === date) { const u = unitOfRow_(base, e); if (us.indexOf(u) < 0) us.push(u); } });
+    return !us.length || us.indexOf(base.unit) >= 0 ? base.unit : us[0];
+  }
+  /** แปลงข้อมูลจาก get_entries → แถวแบบเดิม (Manpower = แถวพิเศษของวัน แทน "แถวแรกของวัน" ในชีต)
+   *  s = ไลน์ (หรือไลน์ย่อยตามหน่วย: s.base = ไลน์จริง) */
   function rowsOf_(s, data) {
-    const out = [];
-    (data.entries || []).filter(e => Number(e.line_id) === s.id).forEach(e => out.push({
+    const base = s.base || s, out = [];
+    (data.entries || []).filter(e => Number(e.line_id) === base.id && unitOfRow_(base, e) === s.unit).forEach(e => out.push({
       iso: e.date, seq: e.seq, product: norm_(e.product), sachet: numOrNull_(e.sachet), plan: numOrNull_(e.plan), act: numOrNull_(e.act),
       remark: String(e.remark || '').trim(), mpP: null, mpA: null,
       loss: s.loss.map(l => numOrNull_((e.loss || {})[String(l.id)]))
     }));
-    (data.manpower || []).filter(m => Number(m.line_id) === s.id).forEach(m => out.push({
+    (data.manpower || []).filter(m => Number(m.line_id) === base.id && mpUnit_(base, data, m.date) === s.unit).forEach(m => out.push({
       iso: m.date, seq: 0, product: '', sachet: null, plan: null, act: null, remark: '',
       mpP: s.mpP >= 0 ? numOrNull_(m.mp_plan) : null, mpA: s.mpA >= 0 ? numOrNull_(m.mp_actual) : null, loss: s.loss.map(() => null)
     }));
+    return out;
+  }
+  /** ไลน์ที่เลือกหน่วยได้ → แยกเป็นไลน์ย่อยตามหน่วยที่มีข้อมูล (ไม่บวก Kg กับ Batch รวมกัน) */
+  function splitUnits_(st, data) {
+    const out = [];
+    st.forEach(s => {
+      const units = [s.unit];
+      if (s.unitOpts) (data.entries || []).forEach(e => { if (Number(e.line_id) === s.id) { const u = unitOfRow_(s, e); if (units.indexOf(u) < 0) units.push(u); } });
+      units.forEach(u => out.push(Object.assign({}, s, { base: s, unit: u, name: u === s.unit ? s.name : s.name + ' · ' + u })));
+    });
     return out;
   }
   function summarize_(s, rows, master) {
@@ -1132,7 +1155,7 @@ window.SMC_CONFIG = {
     const data = st.length ? await rpc('get_entries', { p_from: from, p_to: to, p_line_ids: st.map(s => s.id) }) : { entries: [], manpower: [] };
     const D = days.length, fill = v => new Array(D).fill(v);
     const warnings = [], products = {}, lines = [], series = [], lossTot = [];
-    st.forEach(function (s, li) {
+    splitUnits_(st, data).forEach(function (s, li) {
       const sums = summarize_(s, rowsOf_(s, data), masterAll.map);
       const S = { P: fill(0), A: fill(0), n: fill(0), actN: fill(0), mpP: fill(null), mpA: fill(null), lossEq: fill(0), lossKg: fill(0), base: fill(0), rem: fill(''), prod: fill(null), lt: fill(null) };
       const LT = s.loss.map(() => 0);
@@ -1172,13 +1195,15 @@ window.SMC_CONFIG = {
     const st = await loadStruct();
     const data = await rpc('get_entries', { p_from: iso, p_to: iso, p_line_ids: null });
     return st.map(s => {
-      const E = (data.entries || []).filter(e => Number(e.line_id) === s.id);
+      const all = (data.entries || []).filter(e => Number(e.line_id) === s.id);
+      const u0 = all.some(e => unitOfRow_(s, e) === s.unit) ? s.unit : (all[0] ? unitOfRow_(s, all[0]) : s.unit);
+      const E = all.filter(e => unitOfRow_(s, e) === u0);           // % ของวัน คิดจากหน่วยเดียว (ไม่บวก Kg กับ Batch)
       return {
-        group: groupKeyOf_(s), unit: s.unit, sheet: s.name,
-        n: E.filter(e => e.product).length,
+        group: groupKeyOf_(s), unit: u0, sheet: s.name,
+        n: all.filter(e => e.product).length,
         P: E.reduce((t, e) => t + (Number(e.plan) || 0), 0),
         A: E.reduce((t, e) => t + (Number(e.act) || 0), 0),
-        actN: E.filter(e => e.act != null).length
+        actN: all.filter(e => e.act != null).length
       };
     });
   }
@@ -1324,7 +1349,7 @@ window.SMC_CONFIG = {
     getAllLogs, getLogData, saveLog, savePatrolPlan, deleteLog,
     uploadPhoto, getDriveImage,
     verifyPin: () => true,
-    _test: { summarize_, rowsOf_, isoRange_ }
+    _test: { summarize_, rowsOf_, isoRange_, splitUnits_ }
   };
 })();
 
@@ -1607,7 +1632,7 @@ async function switchEntry(sheet, iso, force) {
 
 function applyEntry(d) {
   E.data = d;
-  E.rows = d.rows.map(r => ({ ...r, loss: d.loss.map((_, j) => (r.loss || [])[j] ?? null) }));
+  E.rows = d.rows.map(r => ({ ...r, unit: r.unit || d.unit, loss: d.loss.map((_, j) => (r.loss || [])[j] ?? null) }));
   E.mpP = d.mpP; E.mpA = d.mpA;
   if (!E.rows.length) E.rows.push(blankRow());
   APP.dirty = false;
@@ -1629,11 +1654,12 @@ async function loadEntry(withStatus = true) {
     E.loading = false; $('eRefresh').classList.remove('spin');
   }
 }
-const blankRow = () => ({ product: '', sachet: null, plan: null, act: null, remark: '', loss: (E.data ? E.data.loss : []).map(() => null) });
+const blankRow = () => ({ product: '', unit: E.data ? E.data.unit : '', sachet: null, plan: null, act: null, remark: '', loss: (E.data ? E.data.loss : []).map(() => null) });
 
 function renderEntry() {
-  const d = E.data, u = d.unit, isCT = d.has.sachet;
-  $('eSub').textContent = `${d.sheet} · ${thDate(d.iso, true)} · หน่วย ${u}`;
+  const d = E.data, isCT = d.has.sachet, uo = d.unitOpts;
+  const u = uo ? 'ตามแถว' : d.unit;
+  $('eSub').textContent = `${d.sheet} · ${thDate(d.iso, true)} · หน่วย ${uo ? uo.join(' / ') + ' (เลือกรายแถว)' : d.unit}`;
   const names = new Set();
   const list = [];
   (isCT ? APP.boot.products.map(p => p.name) : []).concat(d.recent).forEach(n => { const k = keyOf(n); if (n && !names.has(k)) { names.add(k); list.push(n); } });
@@ -1652,7 +1678,7 @@ function renderEntry() {
           <div class="fld inl"><label>${SVG.people} Manpower Actual (คน)</label><input class="inp num" id="eMpA" type="number" min="0" step="1" inputmode="numeric" value="${E.mpA ?? ''}" ${d.has.mpA ? '' : 'disabled'}></div>
           <p class="hint">กรอกครั้งเดียวต่อวัน (บันทึกไว้ที่แถวลำดับ 1 ของวัน)</p></div>` : ''}
         <div class="tbl-wrap etbl-wrap"><table class="etbl">
-          <thead><tr><th class="c">#</th><th class="l pcol">Product</th>${isCT ? '<th>Sachet/CT</th>' : ''}<th>Plan<small>${u}</small></th><th>Actual<small>${u}</small></th><th>%</th>${d.has.remark ? '<th class="l">Remark</th>' : ''}${lossHead}<th></th></tr></thead>
+          <thead><tr><th class="c">#</th><th class="l pcol">Product</th>${uo ? '<th>หน่วย</th>' : ''}${isCT ? '<th>Sachet/CT</th>' : ''}<th>Plan<small>${u}</small></th><th>Actual<small>${u}</small></th><th>%</th>${d.has.remark ? '<th class="l">Remark</th>' : ''}${lossHead}<th></th></tr></thead>
           <tbody id="eBody">${E.rows.map(rowHtml).join('')}</tbody>
         </table></div>
         <datalist id="dlProd">${list.map(n => `<option value="${esc(n)}">`).join('')}</datalist>
@@ -1675,6 +1701,7 @@ function rowHtml(r, i) {
   return `<tr data-i="${i}">
     <td class="c rn">${i + 1}</td>
     <td class="pcol"><input class="inp" data-f="product" list="dlProd" value="${esc(r.product)}" placeholder="เลือก/พิมพ์ชื่อสินค้า" autocomplete="off"></td>
+    ${d.unitOpts ? `<td><select class="inp sm ucol" data-f="unit" title="หน่วยของรายการนี้">${d.unitOpts.map(o => `<option value="${esc(o)}" ${o === (r.unit || d.unit) ? 'selected' : ''}>${esc(o)}</option>`).join('')}</select></td>` : ''}
     ${isCT ? `<td><input class="inp num sm ${m ? 'ro' : ''}" data-f="sachet" type="number" min="0" step="1" value="${m ? m.sachet : v(r.sachet)}" ${m ? 'readonly title="จาก Product Master"' : 'title="ไม่พบใน Product Master — ระบุเอง หรือเพิ่มที่เมนู Product Master"'}></td>` : ''}
     <td><input class="inp num" data-f="plan" type="number" min="0" step="any" inputmode="decimal" value="${v(r.plan)}"></td>
     <td><input class="inp num" data-f="act" type="number" min="0" step="any" inputmode="decimal" value="${v(r.act)}"></td>
@@ -1701,6 +1728,7 @@ function onEntryInput(e) {
       }
     }
   } else if (f === 'remark') r.remark = t.value;
+  else if (f === 'unit') r.unit = t.value;
   else if (f === 'loss') r.loss[Number(t.dataset.j)] = numVal(t.value);
   else r[f] = numVal(t.value);
   if (f === 'plan' || f === 'act') {
@@ -1715,16 +1743,32 @@ function markDirty() {
   const s = $('eState'); if (s) { s.className = 'badge s-warning'; s.innerHTML = '<i>!</i>ยังไม่ได้บันทึก'; }
 }
 function updateEntryTotals() {
-  const d = E.data, u = d.unit;
-  let P = 0, Pd = 0, A_ = 0, n = 0, actN = 0;
-  E.rows.forEach(r => { if (r.product || r.plan || r.act) n++; const p = r.plan > 0 ? r.plan : 0; P += p; if (r.act != null && !isNaN(r.act)) { A_ += r.act; Pd += p; actN++; } });
-  const ach = actN ? pct(A_, Pd) : null;
-  const st = actN && Pd > 0 ? statusOf(A_, Pd) : 'off';
+  const d = E.data;
+  // แยกยอดตามหน่วย (ไลน์อบเลือก Kg / Batch รายแถว — ไม่บวกข้ามหน่วย)
+  const U = {}, order = [];
+  let n = 0, actN = 0;
+  E.rows.forEach(r => {
+    if (r.product || r.plan || r.act) n++;
+    const u = r.unit || d.unit;
+    const t = U[u] || (U[u] = { P: 0, Pd: 0, A: 0, actN: 0, n: 0 }); if (order.indexOf(u) < 0) order.push(u);
+    if (r.product || r.plan || r.act) t.n++;
+    const p = r.plan > 0 ? r.plan : 0; t.P += p;
+    if (r.act != null && !isNaN(r.act)) { t.A += r.act; t.Pd += p; t.actN++; actN++; }
+  });
+  const us = order.filter(u => U[u].n > 0); if (!us.length) us.push(d.unit);
+  const T = u => U[u] || { P: 0, Pd: 0, A: 0, actN: 0, n: 0 };
+  const multi = us.length > 1;
+  const line = (f, sm) => us.map(u => `${f(T(u))}<small>${esc(u)}</small>`).join(multi ? '<span class="usep"> · </span>' : '');
+  const achOf = t => t.actN ? pct(t.A, t.Pd) : null;
+  const ach = multi ? null : achOf(T(us[0]));
+  const st = !multi && T(us[0]).actN && T(us[0]).Pd > 0 ? statusOf(T(us[0]).A, T(us[0]).Pd) : 'off';
+  const achHtml = multi ? us.map(u => `${fmtPct(achOf(T(u)))}<small>${esc(u)}</small>`).join('<span class="usep"> · </span>') : fmtPct(ach);
+  const prodU = us.filter(u => T(u).actN);
   $('eKpis').innerHTML = `
-    <div class="card kpi"><div class="lbl">${SVG.plan}แผนวันนี้ (Plan)</div><div class="val num">${fmtN(P)}<small>${esc(u)}</small></div><div class="sub">${n} รายการสินค้า</div></div>
-    <div class="card kpi"><div class="lbl">${SVG.act}ผลิตจริง (Actual)</div><div class="val num">${actN ? fmtN(A_) : '–'}<small>${esc(u)}</small></div><div class="sub">${actN ? `บันทึกแล้ว ${actN} รายการ` : 'ยังไม่บันทึก Actual'}</div></div>
-    <div class="card kpi"><div class="lbl">${SVG.target}% Achievement</div><div class="val num">${fmtPct(ach)}</div>${kpiBar(ach)}<div class="sub">${actN ? badge(st) + (actN < n ? ' <small class="muted">คิดเฉพาะ ' + actN + ' รายการที่มี Actual</small>' : '') : badge('pend')}</div></div>
-    <div class="card kpi"><div class="lbl">${SVG.people}Manpower</div><div class="val num">${E.mpA ?? '–'}<small>/ ${E.mpP ?? '–'} คน</small></div><div class="sub">${E.mpA > 0 && actN ? 'Productivity ' + fmtN(A_ / E.mpA) + ' ' + esc(u) + '/คน' : 'Actual / Plan'}</div></div>`;
+    <div class="card kpi"><div class="lbl">${SVG.plan}แผนวันนี้ (Plan)</div><div class="val num">${line(t => fmtN(t.P))}</div><div class="sub">${n} รายการสินค้า${multi ? ' · แยกตามหน่วย' : ''}</div></div>
+    <div class="card kpi"><div class="lbl">${SVG.act}ผลิตจริง (Actual)</div><div class="val num">${actN ? line(t => t.actN ? fmtN(t.A) : '–') : '–<small>' + esc(us[0]) + '</small>'}</div><div class="sub">${actN ? `บันทึกแล้ว ${actN} รายการ` : 'ยังไม่บันทึก Actual'}</div></div>
+    <div class="card kpi"><div class="lbl">${SVG.target}% Achievement</div><div class="val num">${achHtml}</div>${multi ? '' : kpiBar(ach)}<div class="sub">${actN ? (multi ? '<small class="muted">คิดแยกตามหน่วย</small>' : badge(st) + (actN < n ? ' <small class="muted">คิดเฉพาะ ' + actN + ' รายการที่มี Actual</small>' : '')) : badge('pend')}</div></div>
+    <div class="card kpi"><div class="lbl">${SVG.people}Manpower</div><div class="val num">${E.mpA ?? '–'}<small>/ ${E.mpP ?? '–'} คน</small></div><div class="sub">${E.mpA > 0 && prodU.length ? 'Productivity ' + prodU.map(u => fmtN(T(u).A / E.mpA) + ' ' + esc(u) + '/คน').join(' · ') : 'Actual / Plan'}</div></div>`;
 }
 const kpiBar = v => `<div class="bar"><i style="width:${Math.min(100, v || 0)}%;background:${achColor(v)}"></i><span class="tgt" style="left:${cfg().target}%"></span></div>`;
 
@@ -1748,7 +1792,7 @@ async function onEntryClick(e) {
     const prev = E.data.prev.rows;
     const keep = E.rows.filter(r => r.product || r.plan != null || r.act != null);
     if (keep.length && !await askConfirm('คัดลอกรายการ', `เพิ่ม ${prev.length} รายการจากวันที่ ${esc(thDate(E.data.prev.iso))} ต่อท้ายรายการที่มีอยู่ ${keep.length} รายการ?`, 'คัดลอก')) return;
-    E.rows = keep.concat(prev.map(p => ({ ...blankRow(), product: p.product, sachet: p.sachet, plan: p.plan })));
+    E.rows = keep.concat(prev.map(p => ({ ...blankRow(), product: p.product, unit: p.unit || E.data.unit, sachet: p.sachet, plan: p.plan })));
     $('eBody').innerHTML = E.rows.map(rowHtml).join('');
     markDirty(); updateEntryTotals();
     toast('คัดลอกรายการสินค้า + Plan แล้ว — ตรวจแผนแล้วกรอก Actual');
@@ -1763,7 +1807,7 @@ async function saveEntry(btn) {
     if (nums.some(v => v != null && (isNaN(v) || v < 0))) errs.push(`แถว ${i + 1}: ตัวเลขต้องเป็นค่าบวก`);
     if (any && !String(r.product || '').trim()) errs.push(`แถว ${i + 1}: กรุณาระบุ Product`);
     if (d.has.sachet && r.product && (r.plan || r.act) && !(r.sachet > 0) && !masterOf(r.product)) errs.push(`แถว ${i + 1}: “${r.product}” ไม่มี Sachet/CT — ระบุตัวเลข หรือเพิ่มใน Product Master`);
-    if (r.plan > 0 && r.act != null && r.act / r.plan * 100 > cfg().over) over.push(`แถว ${i + 1} ${r.product}: Actual ${fmtN(r.act)} = ${fmtPct(r.act / r.plan * 100, 0)} ของ Plan`);
+    if (r.plan > 0 && r.act != null && r.act / r.plan * 100 > cfg().over) over.push(`แถว ${i + 1} ${r.product}: Actual ${fmtN(r.act)} ${r.unit || ''} = ${fmtPct(r.act / r.plan * 100, 0)} ของ Plan`);
   });
   [E.mpP, E.mpA].forEach(v => { if (v != null && (isNaN(v) || v < 0)) errs.push('Manpower ต้องเป็นจำนวนบวก'); });
   if (errs.length) return dlg({ title: 'ตรวจข้อมูลก่อนบันทึก', body: `<ul class="errlist">${errs.map(x => `<li>${esc(x)}</li>`).join('')}</ul>`, ok: 'แก้ไข', cancel: false });
@@ -1774,7 +1818,7 @@ async function saveEntry(btn) {
   try {
     const res = await writeCall('saveEntry', {
       sheet: d.sheet, iso: d.iso, mpP: E.mpP, mpA: E.mpA,
-      rows: E.rows.map(r => ({ product: r.product, sachet: r.sachet, plan: r.plan, act: r.act, remark: r.remark, loss: r.loss }))
+      rows: E.rows.map(r => ({ product: r.product, unit: r.unit, sachet: r.sachet, plan: r.plan, act: r.act, remark: r.remark, loss: r.loss }))
     });
     APP.dirty = false; APP.dashCache.clear();
     toast(`บันทึก ${d.sheet} ${thDate(d.iso)} แล้ว (${res.rows} รายการ) · ${secs(t0)}${res.appended ? ' · เพิ่มแถวในชีต ' + res.appended + ' แถว' : ''}`);
