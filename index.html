@@ -1178,7 +1178,7 @@ window.SMC_CONFIG = {
           (e[7] || []).forEach((v, j) => { pr.lt[j] += v || 0; });
         });
       });
-      lines.push({ name: s.name, unit: s.unit, loss: s.loss.map(l => ({ name: l.name, unit: l.unit })) });
+      lines.push({ name: s.name, base: (s.base || s).name, unit: s.unit, loss: s.loss.map(l => ({ name: l.name, unit: l.unit })) });
       series.push(S); lossTot.push(LT);
     });
     return {
@@ -2023,6 +2023,32 @@ const lineUnit = i => A.data.lines[i].unit || A.data.group.key;
 const lineColor = i => LINE_COLORS[i % LINE_COLORS.length];
 const lnTag = i => `<span class="lname" style="--c:${lineColor(i)}"><i class="dot"></i>${esc(A.data.lines[i].name)}</span>`;
 
+/** % Achievement แบบ "เฉลี่ยรายรายการ" (ใช้เมื่อมีหลายหน่วย เช่น Kg + Batch — % ไม่มีหน่วยจึงเฉลี่ยรวมกันได้)
+ *  แต่ละสินค้า-วัน-ไลน์ = 1 รายการ: Actual ÷ Plan (เฉพาะรายการที่มี Plan และบันทึก Actual แล้ว) แล้วเฉลี่ยทุกรายการเท่ากัน */
+function itemAch(idx, k0, k1) {
+  const d = A.data; let sum = 0, n = 0;
+  idx.forEach(i => { const S = d.series[i]; for (let k = k0; k <= k1; k++) (S.prod[k] || []).forEach(e => { if (e[2] > 0) { sum += e[3] / e[2]; n++; } }); });
+  return { pct: n ? sum / n * 100 : null, n };
+}
+/** รวมไลน์ย่อยตามหน่วย (เช่น อบ6 + อบ6 · Batch) กลับเป็นไลน์เดียวสำหรับตาราง/กราฟ % แยกไลน์ */
+function mergeLines(lines) {
+  const d = A.data, C = cfg(), by = {}, out = [];
+  lines.forEach(x => { const b = d.lines[x.i].base || d.lines[x.i].name; (by[b] = by[b] || []).push(x); });
+  lines.forEach(x => {
+    const b = d.lines[x.i].base || d.lines[x.i].name, g = by[b];
+    if (g.length < 2) return out.push(x);
+    if (g[0] !== x) return;
+    const ids = g.map(y => y.i), sum = k => g.reduce((t, y) => t + (y[k] || 0), 0);
+    let pd = 0, met = 0, worst = null;
+    d.days.forEach((day, k) => { const r = itemAch(ids, k, k); if (r.n) { pd++; if (pctRound(r.pct) >= C.target) met++; if (!worst || r.pct < worst.v) worst = { v: r.pct, iso: day.iso, k }; } });
+    const ach = itemAch(ids, 0, d.days.length - 1).pct, le = sum('lossEq'), bs = sum('base'), md = sum('mpDays');
+    out.push({ ...x, merged: g, name: b, unit: g.map(y => y.unit).join(' + '), ach, pd, met, worst, zero: sum('zero'), pendD: sum('pendD'),
+      lossEq: le, base: bs, lossPct: g.some(y => y.lossPct != null) && (bs + le) > 0 ? le / (bs + le) * 100 : null, kg: sum('kg'),
+      avgMp: md ? sum('manDays') / md : null, avgMpP: null, prod: null });
+  });
+  return out;
+}
+
 function achCompute() {
   const d = A.data, C = cfg(), isCT = d.group.key === 'CT';
   const idx = d.lines.map((_, i) => i).filter(i => A.sel.has(i));
@@ -2058,7 +2084,10 @@ function achCompute() {
   const T = { ...T0, lossEq: rows.reduce((s, r) => s + r.lossEq, 0), base: rows.reduce((s, r) => s + r.base, 0) };
   const lines = idx.map(i => lineStats(i, 0, d.days.length - 1));
   const lossUnits = [...new Set(lines.filter(x => x.unit === 'Kg' || x.unit === 'CT' || x.unit === 'Sachet').map(x => x.unit))];
-  return { idx, rows, vis, T, TU, units, multi: units.length > 1, planDays: T0.planDays, metDays: T0.metDays, lines, pend, isCT, lossUnits, workDays: rows.filter(r => r.work).length };
+  const multi = units.length > 1;
+  if (multi) rows.forEach(r => { r.c = itemAch(idx, r.k, r.k); });          // % รวมทุกหน่วยของวันนั้น (เฉลี่ยรายรายการ)
+  const comb = multi ? itemAch(idx, 0, d.days.length - 1) : null;
+  return { idx, rows, vis, T, TU, units, multi, comb, linesM: multi ? mergeLines(lines) : lines, planDays: T0.planDays, metDays: T0.metDays, lines, pend, isCT, lossUnits, workDays: rows.filter(r => r.work).length };
 }
 
 /** สถิติของ 1 ไลน์ในช่วง index วัน k0..k1 */
@@ -2138,14 +2167,14 @@ function renderAchBody(R) {
   const pendNote = R.pend.length ? `<div class="info mt">${SVG.info}<div><b>มี Plan แต่ยังไม่บันทึก Actual ${R.pend.length} วัน-ไลน์</b> — แสดง Plan ตามปกติ แต่ยังไม่นำมาคิด % Achievement / Gap จนกว่าจะบันทึก Actual:
       ${R.pend.slice(-12).map(p => `<a class="plink" data-dc="${p.i},${p.k}">${esc(d.lines[p.i].name)} ${dm(p.iso)}</a>`).join(', ')}${R.pend.length > 12 ? ' …' : ''}</div></div>` : '';
   const warn = d.warnings.length ? `<div class="integrity mt">${badge('warning', 'ข้อควรตรวจสอบ ' + d.warnings.length + ' รายการ')}<details><summary>ดูรายละเอียด</summary><ul>${d.warnings.slice(0, 60).map(w => `<li>${esc(w)}</li>`).join('')}</ul></details></div>` : '';
-  const multiNote = R.multi ? `<div class="info mt">${SVG.info}<div>ไลน์ที่เลือกมีหลายหน่วย (<b>${R.units.map(esc).join(', ')}</b>) — ยอดรวมแสดง<b>แยกตามหน่วย</b> ไม่บวกข้ามหน่วย · กราฟใช้แกนซ้าย = ${esc(R.units[0])}, แกนขวา = ${esc(R.units.slice(1).join(', '))}</div></div>` : '';
+  const multiNote = R.multi ? `<div class="info mt">${SVG.info}<div>ไลน์ที่เลือกมีหลายหน่วย (<b>${R.units.map(esc).join(', ')}</b>) — ยอด Plan / Actual แสดง<b>แยกตามหน่วย</b> ไม่บวกข้ามหน่วย · <b>% Achievement รวม = เฉลี่ย % ของทุกรายการสินค้า</b> (ไลน์ที่มี Kg + Batch รวมเป็นไลน์เดียวด้วยวิธีเดียวกัน) · กราฟยอดใช้แกนซ้าย = ${esc(R.units[0])}, แกนขวา = ${esc(R.units.slice(1).join(', '))}</div></div>` : '';
   const lossPct = R.lossUnits.length && (T.base + T.lossEq) > 0 ? T.lossEq / (T.base + T.lossEq) * 100 : null;
   const lossLabel = R.isCT || (R.lossUnits.length && R.lossUnits.indexOf('Kg') < 0) ? '(ซอง)' : R.lossUnits.indexOf('Kg') >= 0 ? '(kg)' : '';
 
   const cv = d.conv, convNote = cv ? `<div class="info mt">${SVG.info}<div>แสดงเป็น <b>${esc(cv.tgt)}</b> — ${cv.tgt === 'Sachet' ? 'CT × Sachet/CT ของแต่ละสินค้า' : 'Sachet ÷ Sachet/CT ของแต่ละสินค้า'} (ค่าจากคอลัมน์ Sachet/CT ในแถว หรือ Product Master)` +
     (cv.keep.length ? `<br>คงหน่วยเดิม (ยังนับยอดตามปกติ แยกเป็นอีกหน่วย): ${cv.keep.map(x => `<b>${esc(d.lines[x.i].name)}</b> = ${esc(d.lines[x.i].unit)} <span class="muted">(ไม่มี Sachet/CT: ${x.why.slice(0, 4).map(esc).join(', ')}${x.why.length > 4 ? ' …' : ''})</span>`).join(' · ')}` : '') + `</div></div>` : '';
   $('aApp').innerHTML = `${warn}${convNote}${multiNote}${pendNote}
-  <section class="grid kpis mt">${achKpis(R.units, R.TU, { lines: R.idx.length, workDays: R.workDays, lossPct, lossLabel, lossEq: T.lossEq, lossUnits: R.lossUnits, isCT: R.isCT, multi: R.multi })}</section>
+  <section class="grid kpis mt">${achKpis(R.units, R.TU, { comb: R.comb, lines: R.idx.length, workDays: R.workDays, lossPct, lossLabel, lossEq: T.lossEq, lossUnits: R.lossUnits, isCT: R.isCT, multi: R.multi })}</section>
   <p class="hint clickhint">${SVG.info} คลิกแท่ง/จุดในกราฟ หรือแถวในตาราง เพื่อดูรายละเอียดลึกลงไป (ไลน์ → วัน → สินค้า)</p>
 
   <section class="grid g-2-1 mt">
@@ -2159,8 +2188,7 @@ function renderAchBody(R) {
   </section>
 
   <section class="grid g-1-1 mt">
-    <div class="card"><div class="card-h"><div><h2>% Achievement รายวัน</h2><p>${R.multi ? 'แยกเส้นตามหน่วย' : 'ไลน์ที่เลือกรวมกัน'} · คลิกจุดเพื่อดูวันนั้น</p></div></div>
-      ${R.multi ? `<div class="clegend">${R.units.map((x, j) => `<span><i class="ln solid" style="--c:${unitCol(j).a}"></i>${esc(x)}</span>`).join('')}</div>` : ''}
+    <div class="card"><div class="card-h"><div><h2>% Achievement รายวัน</h2><p>${R.multi ? 'รวม ' + esc(R.units.join(' + ')) + ' · เฉลี่ย % ของทุกรายการ' : 'ไลน์ที่เลือกรวมกัน'} · คลิกจุดเพื่อดูวันนั้น</p></div></div>
       <div class="card-b"><div class="chartbox sm" id="bPct"><canvas id="cPct"></canvas></div></div></div>
     <div class="card"><div class="card-h"><div><h2>ยอดสะสม Plan vs Actual</h2><p id="cumSub"></p></div></div>
       <div class="clegend">${R.units.map((x, j) => `<span><i class="ln" style="--c:${j ? unitCol(j).a : '#86857f'}"></i>Plan สะสม${R.multi ? ' ' + esc(x) : ''}</span><span><i class="ln solid" style="--c:${unitCol(j).a}"></i>Actual สะสม${R.multi ? ' ' + esc(x) : ''}</span>`).join('')}</div>
@@ -2199,7 +2227,8 @@ function achKpis(units, TU, o) {
   const kPlan = multi ? `<div class="ulist">${units.map(x => one(TU[x].P, x)).join('')}</div>` : one(TU[units[0]].P, units[0], 1);
   const kAct = multi ? `<div class="ulist">${units.map(x => one(TU[x].A, x)).join('')}</div>` : one(TU[units[0]].A, units[0], 1);
   const achOf = x => pct(TU[x].A, TU[x].Pd);
-  const kAch = multi ? `<div class="ulist">${units.map(x => `<div class="val num v2">${fmtPct(achOf(x))}<small>${esc(x)}</small> ${TU[x].Pd > 0 ? badge(statusOf(TU[x].A, TU[x].Pd), '') : ''}</div>`).join('')}</div><div class="sub">เป้า ≥ ${C.target}% (แยกตามหน่วย)</div>`
+  const kAch = multi && o.comb ? `<div class="val num">${fmtPct(o.comb.pct)}</div>${kpiBar(o.comb.pct)}<div class="sub">${o.comb.n ? badge(statusOf(o.comb.pct, 100)) : badge('off')} เป้า ≥ ${C.target}% · <small class="muted">รวม ${units.join(' + ')} (เฉลี่ย ${o.comb.n} รายการ)</small></div>`
+    : multi ? `<div class="ulist">${units.map(x => `<div class="val num v2">${fmtPct(achOf(x))}<small>${esc(x)}</small> ${TU[x].Pd > 0 ? badge(statusOf(TU[x].A, TU[x].Pd), '') : ''}</div>`).join('')}</div><div class="sub">เป้า ≥ ${C.target}% (แยกตามหน่วย)</div>`
     : (() => { const t = TU[units[0]], a = achOf(units[0]); return `<div class="val num">${fmtPct(a)}</div>${kpiBar(a)}<div class="sub">${t.Pd > 0 ? badge(statusOf(t.A, t.Pd)) : t.P > 0 ? badge('pend') : badge('off')} เป้า ≥ ${C.target}%</div>`; })();
   const kGap = `<div class="ulist">${units.map(x => { const t = TU[x]; return `<div class="val num${multi ? ' v2' : ''} ${t.A - t.Pd >= 0 ? 'pos' : 'neg'}">${fmtSigned(t.A - t.Pd)}<small>${esc(x)}</small></div>`; }).join('')}</div>`;
   const lossBox = o.lossPct !== undefined
@@ -2215,7 +2244,22 @@ function achKpis(units, TU, o) {
 
 function lineTable(R) {
   if (!R.lines.length) return '<div class="empty">เลือกอย่างน้อย 1 ไลน์</div>';
-  const body = R.lines.map(x => {
+  const body = (R.linesM || R.lines).map(x => {
+    if (x.merged) {       // ไลน์ที่มีหลายหน่วย: ยอดแยกตามหน่วย · % = เฉลี่ยรายรายการ
+      const g = x.merged, st = x.ach != null ? statusOf(x.ach, 100) : (x.pendD ? 'pend' : 'off');
+      const per = f => g.map(y => `${f(y)} <small class="muted">${esc(y.unit)}</small>`).join('<br>');
+      return `<tr class="click" data-dl="${x.i}"><td>${lnTag(x.i).replace(esc(A.data.lines[x.i].name), esc(x.name))}</td>
+      ${R.multi ? `<td class="l"><span class="ltag">${esc(x.unit)}</span></td>` : ''}
+      <td class="num">${per(y => fmtN(y.P))}</td><td class="num">${per(y => fmtN(y.A))}</td><td class="num">${per(y => `<span class="${y.gap >= 0 ? 'pos' : 'neg'}">${fmtSigned(y.gap)}</span>`)}</td>
+      <td class="num"><b>${fmtPct(x.ach)}</b><br><small class="muted">เฉลี่ยรายรายการ</small></td><td class="num">${x.met} / ${x.pd}</td>
+      <td class="num">${x.zero ? `<span class="neg">${x.zero}</span>` : '0'}</td>
+      <td class="num">${x.pendD ? `<span class="badge s-pend"><i>…</i>${x.pendD}</span>` : '–'}</td>
+      <td class="num">${fmtPct(x.lossPct, 2)}</td><td class="num">${x.kg ? fmtN(x.kg) : '–'}</td>
+      <td class="num">${x.avgMp != null ? fmtN(x.avgMp) : '–'}</td>
+      <td class="num">${per(y => y.prod != null ? fmtN(y.prod) : '–')}</td>
+      <td class="num">${x.worst ? `${fmtPct(x.worst.v)} <small class="muted">(${dm(x.worst.iso)})</small>` : '–'}</td>
+      <td class="l">${badge(st)}</td></tr>`;
+    }
     const st = x.Pd > 0 ? statusOf(x.A, x.Pd) : (x.A > 0 ? 'unplan' : (x.pendD ? 'pend' : 'off'));
     return `<tr class="click" data-dl="${x.i}"><td>${lnTag(x.i)}</td>
       ${R.multi ? `<td class="l"><span class="ltag">${esc(x.unit)}</span></td>` : ''}
@@ -2236,7 +2280,8 @@ function lineTable(R) {
     return `<tr><td>รวม (${esc(un)})</td>${R.multi ? '<td></td>' : ''}<td class="num">${fmtN(t.P)}</td><td class="num">${fmtN(t.A)}</td><td class="num ${t.A - t.Pd >= 0 ? 'pos' : 'neg'}">${fmtSigned(t.A - t.Pd)}</td>
       <td class="num">${fmtPct(pct(t.A, t.Pd))}</td><td class="num">${t.metDays} / ${t.planDays}</td><td class="num">${sum('zero')}</td><td class="num">${sum('pendD') || '–'}</td>
       <td class="num">${(un === 'Kg' || un === 'CT' || un === 'Sachet') && (b + le) > 0 ? fmtPct(le / (b + le) * 100, 2) : '–'}</td><td class="num">${fmtN(sum('kg')) || '–'}</td><td></td><td></td><td></td><td></td></tr>`;
-  }).join('');
+  }).join('') + (R.multi && R.comb ? `<tr><td>รวมทุกหน่วย</td><td class="l"><span class="ltag">${esc(R.units.join(' + '))}</span></td><td class="num">–</td><td class="num">–</td><td class="num">–</td>
+      <td class="num"><b>${fmtPct(R.comb.pct)}</b><br><small class="muted">เฉลี่ย ${R.comb.n} รายการ</small></td><td class="num">${R.rows.filter(r => r.c && r.c.n && pctRound(r.c.pct) >= cfg().target).length} / ${R.rows.filter(r => r.c && r.c.n).length}</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>` : '');
   return `<table><thead><tr><th>ไลน์</th>${R.multi ? '<th class="l">หน่วย</th>' : ''}<th>Plan</th><th>Actual</th><th>Gap</th><th>Achievement</th><th>วันผ่านเป้า</th><th>วันแผน&gt;0 ผลิต 0</th><th>รอ Actual</th><th>% Loss</th><th>Loss kg</th><th>คน/วัน (จริง/แผน)</th><th>ผลิต/คน/วัน</th><th>วันที่แย่สุด</th><th class="l">สถานะ</th></tr></thead>
     <tbody>${body}</tbody><tfoot>${foot}</tfoot></table>
     <p class="hint" style="margin:10px 0 0">Gap / Achievement เทียบกับ Plan ของวันที่บันทึก Actual แล้ว · ผลิต/คน/วัน = Actual ÷ คน-วัน (เฉพาะวันที่มีทั้ง Actual และ Manpower Actual)</p>`;
@@ -2617,19 +2662,30 @@ function renderAchCharts(R) {
       scales: axes(v => fmtN(v)) }, toDay) });
 
   // 2) % Achievement แยกไลน์ (เป็น % เทียบข้ามหน่วยได้)
-  const L = R.lines, maxL = Math.max(110, ...L.map(x => x.ach || 0));
+  const L = R.linesM || R.lines, maxL = Math.max(110, ...L.map(x => x.ach || 0));
   mkChart(CH, 'cLine', { type: 'bar', data: { labels: L.map(x => x.name), datasets: [{ data: L.map(x => x.ach ?? 0), backgroundColor: L.map(x => achColor(x.ach)), borderRadius: 4, maxBarThickness: 22 }] },
     options: clickable({ indexAxis: 'y', maintainAspectRatio: false, plugins: { legend: { display: false }, targetLine: { value: C.target, axis: 'x', label: `เป้า ${C.target}%` },
       barValue: { enabled: true, values: L.map(x => x.ach), format: v => fmtPct(v) },
-      tooltip: { ...tooltipBase, callbacks: { label: c => { const x = L[c.dataIndex]; return [` Achievement: ${fmtPct(x.ach)}`, ` Plan ${fmtN(x.P)} · Actual ${fmtN(x.A)} ${x.unit}`].concat(x.pendP ? [` รอ Actual ${fmtN(x.pendP)}`] : []).concat([' คลิกเพื่อดูรายละเอียดไลน์']); } } } },
+      tooltip: { ...tooltipBase, callbacks: { label: c => { const x = L[c.dataIndex]; return x.merged ? [` Achievement: ${fmtPct(x.ach)} (เฉลี่ยรายรายการ)`].concat(x.merged.map(y => ` ${y.unit}: Plan ${fmtN(y.P)} · Actual ${fmtN(y.A)}`)).concat([' คลิกเพื่อดูรายละเอียดไลน์']) : [` Achievement: ${fmtPct(x.ach)}`, ` Plan ${fmtN(x.P)} · Actual ${fmtN(x.A)} ${x.unit}`].concat(x.pendP ? [` รอ Actual ${fmtN(x.pendP)}`] : []).concat([' คลิกเพื่อดูรายละเอียดไลน์']); } } } },
       scales: { x: { min: 0, max: Math.min(400, Math.ceil(maxL / 10) * 10 + 15), grid: { color: '#efeee9' }, border: { display: false }, ticks: { callback: v => v + '%' } }, y: { grid: { display: false }, ticks: { font: { weight: '600' } } } } }, n => drillTo({ t: 'line', i: L[n].i })) });
 
   // 3) % Achievement รายวัน (แยกเส้นตามหน่วย)
   const allPct = [];
-  U.forEach(x => rows.forEach(r => { if (r.u[x].pct != null) allPct.push(r.u[x].pct); }));
+  if (multi) rows.forEach(r => { if (r.c && r.c.pct != null) allPct.push(r.c.pct); });
+  else U.forEach(x => rows.forEach(r => { if (r.u[x].pct != null) allPct.push(r.u[x].pct); }));
   const realMax = Math.max(0, ...allPct);
   const cap = realMax > 200 ? 200 : Math.max(120, Math.ceil(realMax / 10) * 10 + 10);
   const ptCol = x => rows.map(r => ACH_COLOR[statusOf(r.u[x].A, r.u[x].Pd)] || '#c3c2b7');
+  if (multi) {       // หลายหน่วย → เส้นเดียว: เฉลี่ย % ของทุกรายการในวันนั้น
+    const cv = rows.map(r => r.c && r.c.pct != null ? r.c.pct : null);
+    mkChart(CH, 'cPct', { type: 'line', data: { labels, datasets: [{ label: 'รวม', data: cv.map(v => v == null ? null : Math.min(v, cap)),
+        borderColor: unitCol(0).a, borderWidth: 2, tension: .25, spanGaps: true, pointRadius: 4.5, pointHoverRadius: 6,
+        pointBackgroundColor: cv.map(v => v == null ? '#c3c2b7' : ACH_COLOR[statusOf(v, 100)] || '#c3c2b7'), pointBorderColor: '#fff', pointBorderWidth: 2 }] },
+      options: clickable({ maintainAspectRatio: false, interaction: { mode: 'index', intersect: false },
+        plugins: { legend: { display: false }, targetLine: { value: C.target, axis: 'y', label: `เป้า ${C.target}%` },
+          tooltip: { ...tooltipBase, callbacks: { title: titleCb, label: c => { const r = rows[c.dataIndex]; return [` Achievement รวม: ${fmtPct(r.c.pct)} (เฉลี่ย ${r.c.n} รายการ)`].concat(U.map(x => ` ${x}: ${fmtPct(r.u[x].pct)}`)); } } } },
+        scales: { x: { grid: { display: false } }, y: { min: 0, max: cap, border: { display: false }, ticks: { callback: v => v + '%' } } } }, toDay) });
+  } else
   mkChart(CH, 'cPct', { type: 'line', data: { labels, datasets: U.map((x, j) => ({ label: x, unit: x, data: rows.map(r => r.u[x].pct == null ? null : Math.min(r.u[x].pct, cap)),
       borderColor: unitCol(j).a, borderWidth: 2, tension: .25, spanGaps: true, pointRadius: 4.5, pointHoverRadius: 6,
       pointBackgroundColor: ptCol(x), pointBorderColor: multi ? unitCol(j).a : '#fff', pointBorderWidth: 2 })) },
