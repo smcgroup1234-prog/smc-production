@@ -2010,7 +2010,7 @@ function unitView(d) {
    P  = Plan ทั้งหมด (แสดงในยอดรวม/กราฟเสมอ)
    Pd = Plan เฉพาะวัน-ไลน์ที่บันทึก Actual แล้ว (ใช้คิด % Achievement / Gap — กันตัวเลขตกเพราะยังไม่ได้กรอก Actual) */
 const UNIT_COL = [
-  { p: '#c3c2b7', a: '#2a78d6', fill: 'rgba(42,120,214,.08)' },
+  { p: '#bcd5f3', a: '#2a78d6', fill: 'rgba(42,120,214,.08)' },
   { p: '#f1cfb4', a: '#eb6834', fill: 'rgba(235,104,52,.08)' },
   { p: '#bfe3d3', a: '#1baf7a', fill: 'rgba(27,175,122,.08)' }
 ];
@@ -2179,7 +2179,7 @@ function renderAchBody(R) {
 
   <section class="grid g-2-1 mt">
     <div class="card"><div class="card-h"><div><h2>Plan vs Actual รายวัน</h2><p>ยอดรวมของไลน์ที่เลือก (${esc(u)}) · คลิกแท่งเพื่อดูวันนั้น</p></div></div>
-      <div class="clegend">${R.multi ? R.units.map((x, j) => `${planLeg(j, 'Plan ' + esc(x))}<span><i class="sw" style="--c:${unitCol(j).a}"></i>Actual ${esc(x)}${j ? ' (แกนขวา)' : ''}</span>`).join('')
+      <div class="clegend">${R.multi ? R.units.map((x, j) => `<span><i class="sw" style="--c:${unitCol(j).p}"></i>Plan ${esc(x)}</span><span><i class="sw" style="--c:${unitCol(j).a}"></i>Actual ${esc(x)}${j ? ' (แกนขวา)' : ''}</span>`).join('')
         : `${planLeg(0, 'Plan')}<span>Actual:</span>${achLegend()}`}</div>
       <div class="card-b"><div class="chartbox" id="bDaily"><canvas id="cDaily"></canvas></div></div></div>
     <div class="card"><div class="card-h"><div><h2>% Achievement แยกไลน์</h2><p>คลิกแท่งเพื่อดูรายละเอียดไลน์ · เส้นประ = เป้า ${C.target}%</p></div></div>
@@ -2652,7 +2652,8 @@ function renderAchCharts(R) {
   // 1) Plan vs Actual รายวัน
   const dsDaily = [];
   U.forEach((x, j) => {
-    dsDaily.push({ label: 'Plan' + (multi ? ' ' + x : ''), unit: x, data: rows.map(r => r.u[x].P || null), type: 'line', borderDash: [6, 4], borderWidth: 1.5, pointRadius: 4, pointHoverRadius: 6, pointStyle: 'circle', spanGaps: true, order: 0, borderColor: planCol(j), backgroundColor: planCol(j), pointBackgroundColor: '#fff', pointBorderWidth: 2, yAxisID: axis(j) });
+    if (multi) dsDaily.push({ label: 'Plan ' + x, unit: x, data: rows.map(r => r.u[x].P || null), backgroundColor: unitCol(j).p, borderRadius: 4, maxBarThickness: 16, categoryPercentage: .72, barPercentage: .92, yAxisID: axis(j) });   // หลายหน่วย: Plan เป็นแท่งจางคู่กับ Actual (ไม่ลากเส้นข้ามแกน → ไม่ไขว้กัน)
+    else dsDaily.push({ label: 'Plan', unit: x, data: rows.map(r => r.u[x].P || null), type: 'line', borderDash: [6, 4], borderWidth: 1.5, pointRadius: 4, pointHoverRadius: 6, pointStyle: 'circle', spanGaps: true, order: 0, borderColor: planCol(j), backgroundColor: planCol(j), pointBackgroundColor: '#fff', pointBorderWidth: 2, yAxisID: axis(j) });
     dsDaily.push({ label: 'Actual' + (multi ? ' ' + x : ''), unit: x, data: rows.map(r => r.u[x].A), backgroundColor: multi ? unitCol(j).a : rows.map(r => r.u[x].Pd > 0 ? achColor(r.u[x].pct) : unitCol(j).a), borderRadius: 4, maxBarThickness: 16, categoryPercentage: .72, barPercentage: .92, yAxisID: axis(j) });
   });
   mkChart(CH, 'cDaily', { type: 'bar', data: { labels, datasets: dsDaily },
@@ -3558,7 +3559,6 @@ window.__chartReady.then(ok => {
   Object.keys(LOGS).forEach(k => { if (LOGS[k].data && APP.page === k) rerender(k); });
 });
 boot();
-
 </script>
 </body>
 </html>
